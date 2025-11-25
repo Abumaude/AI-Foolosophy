@@ -446,40 +446,81 @@ class GroundTruthLoader:
         return ground_truth
 
     def _parse_line_entry(self, line: str, line_num: int) -> GroundTruthEntry:
-        """Parse a single line-by-line entry"""
+        """Parse a single line-by-line entry
+
+        Supports multiple formats:
+        1. JSON format: {"labels": ["attacker_vpn", "dnsteal"]} or {"labels": []}
+        2. Simple CSV: benign,0,none or malicious,1,privilege_escalation
+        3. Binary only: 0 or 1
+        """
+        line = line.strip()
+
+        # Try JSON format first (AIT dataset format)
+        if line.startswith('{'):
+            try:
+                data = json.loads(line)
+                labels = data.get('labels', [])
+
+                # If labels list is not empty, it's malicious
+                if labels:
+                    attack_types = ','.join(labels)  # Join multiple labels
+                    return GroundTruthEntry(
+                        label='malicious',
+                        binary=1,
+                        attack_type=attack_types,
+                        metadata={'line_number': line_num, 'raw_labels': labels}
+                    )
+                else:
+                    return GroundTruthEntry(
+                        label='benign',
+                        binary=0,
+                        attack_type='none',
+                        metadata={'line_number': line_num, 'raw_labels': []}
+                    )
+            except json.JSONDecodeError:
+                pass  # Fall through to CSV parsing
+
+        # Try CSV format: label,binary,attack_type
         parts = line.split(',')
 
         if len(parts) >= 3:
-            return GroundTruthEntry(
-                label=parts[0].strip(),
-                binary=int(parts[1].strip()),
-                attack_type=parts[2].strip(),
-                metadata={'line_number': line_num}
-            )
-        elif len(parts) == 2:
-            label = parts[0].strip()
-            binary = int(parts[1].strip()) if parts[1].strip().isdigit() else (1 if label.lower() == 'malicious' else 0)
-            return GroundTruthEntry(
-                label=label,
-                binary=binary,
-                attack_type='unknown',
-                metadata={'line_number': line_num}
-            )
-        else:
-            # Single value - try to interpret
-            label = parts[0].strip().lower()
-            if label in ['0', '1']:
-                binary = int(label)
-                label = 'malicious' if binary == 1 else 'benign'
-            else:
-                binary = 1 if label == 'malicious' else 0
+            try:
+                return GroundTruthEntry(
+                    label=parts[0].strip(),
+                    binary=int(parts[1].strip()),
+                    attack_type=parts[2].strip(),
+                    metadata={'line_number': line_num}
+                )
+            except ValueError:
+                pass  # Fall through
 
+        if len(parts) == 2:
+            label = parts[0].strip()
+            try:
+                binary = int(parts[1].strip())
+            except ValueError:
+                binary = 1 if label.lower() == 'malicious' else 0
             return GroundTruthEntry(
                 label=label,
                 binary=binary,
                 attack_type='unknown',
                 metadata={'line_number': line_num}
             )
+
+        # Single value - try to interpret
+        label = parts[0].strip().lower()
+        if label in ['0', '1']:
+            binary = int(label)
+            label = 'malicious' if binary == 1 else 'benign'
+        else:
+            binary = 1 if label == 'malicious' else 0
+
+        return GroundTruthEntry(
+            label=label,
+            binary=binary,
+            attack_type='unknown',
+            metadata={'line_number': line_num}
+        )
 
     def _load_csv(self, label_file: str) -> Dict[int, GroundTruthEntry]:
         """
